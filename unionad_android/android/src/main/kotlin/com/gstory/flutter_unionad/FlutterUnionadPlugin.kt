@@ -2,6 +2,8 @@ package com.gstory.flutter_unionad
 
 import android.app.Activity
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.text.TextUtils
 import android.util.Log
 import androidx.annotation.NonNull
@@ -67,21 +69,25 @@ class FlutterUnionadPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 Log.e("初始化", "appId can't be null")
                 result.success(false)
             } else {
+                // 回调切回主线程用主 Looper，不依赖 mActivity：
+                // Activity 恰好处于 detach 窗口（为 null）时，原来的 mActivity?.runOnUiThread
+                // 会直接跳过，result 永远不回复，Dart 侧 await register 永久挂起。
+                val mainHandler = Handler(Looper.getMainLooper())
                 TTAdManagerHolder.init(applicationContext!!,
                     arguments,
                     object : TTAdSdk.Callback {
                         override fun success() {
                             Log.e("初始化", "成功")
-                            mActivity?.runOnUiThread(Runnable {
+                            mainHandler.post {
                                 result.success(true)
-                            })
+                            }
                         }
 
                         override fun fail(p0: Int, p1: String?) {
                             Log.e("初始化", "失败 $p0  $p1")
-                            mActivity?.runOnUiThread(Runnable {
+                            mainHandler.post {
                                 result.success(false)
-                            })
+                            }
                         }
                     }
                 )
@@ -102,9 +108,14 @@ class FlutterUnionadPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             //预激励视频广告
         } else if (call.method == "loadRewardVideoAd") {
             RewardVideoAd.init(mActivity!!, mActivity!!, call.arguments as Map<String?, Any?>)
+            // 与 iOS / OHOS 一致：请求已发起即返回 true，加载结果走 EventChannel 回调。
+            // 之前漏了这句，Dart 侧 await loadRewardVideoAd 在 Android 上永远不返回。
+            result.success(true)
             //显示激励广告
         } else if (call.method == "showRewardVideoAd") {
             RewardVideoAd.showAd()
+            // 同上：展示结果走 EventChannel（onShow / onUnReady / onClose ...）
+            result.success(true)
             //预加载插屏广告 全屏插屏二合一
         } else if (call.method == "loadFullScreenVideoAdInteraction") {
             val mCodeId = call.argument<String>("codeId")
@@ -123,6 +134,10 @@ class FlutterUnionadPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             //获取主题模式
         } else if (call.method == "getThemeStatus") {
             result.success(TTAdSdk.getAdManager().themeStatus)
+        } else {
+            // 与 iOS（FlutterMethodNotImplemented）/ OHOS（notImplemented）一致，
+            // 未知方法不回复会让 Dart 侧 await 永久挂起
+            result.notImplemented()
         }
     }
 

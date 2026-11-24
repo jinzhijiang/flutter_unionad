@@ -29,8 +29,12 @@ object RewardVideoAd {
     var mContext: Context? = null
     var mActivity: Activity? = null
 
+    //已加载、尚未展示的广告；showAd() 时取走置空（一条激励广告只能展示一次）
     private var mttRewardVideoAd: TTRewardVideoAd? = null
-    private var mIsLoaded = false //视频是否加载完成
+
+    //已关闭、待释放的广告。关闭后奖励回调仍可能迟到，所以不在 onAdClose 里立刻 destroy，
+    //等下一次加载时再释放
+    private var mClosedAd: TTRewardVideoAd? = null
 
     //参数
     private var mCodeId: String? = null
@@ -59,7 +63,24 @@ object RewardVideoAd {
         } else {
             this.mediaExtra = params["mediaExtra"] as String
         }
+        //新一轮加载前先丢弃旧实例（与 iOS 每次 load 新建实例、关闭/失败置空一致）。
+        //否则本次加载失败时，showAd() 仍会拿上一条广告去展示（参数是上一次的 mediaExtra）。
+        destroyAd(mttRewardVideoAd)
+        mttRewardVideoAd = null
+        destroyAd(mClosedAd)
+        mClosedAd = null
         loadRewardVideoAd()
+    }
+
+    private fun destroyAd(ad: TTRewardVideoAd?) {
+        if (ad == null) {
+            return
+        }
+        try {
+            ad.mediationManager?.destroy()
+        } catch (e: Exception) {
+            Log.e(TAG, "rewardVideoAd destroy error: $e")
+        }
     }
 
     private fun loadRewardVideoAd() {
@@ -112,7 +133,10 @@ object RewardVideoAd {
             //视频广告素材加载到，如title,视频url等，不包括视频文件
             override fun onRewardVideoAdLoad(ad: TTRewardVideoAd) {
                 Log.e(TAG, "rewardVideoAd loaded 广告类型：${getAdType(ad.rewardVideoAdType)}")
-                mIsLoaded = false
+                //并发加载时，被覆盖的旧实例尚未展示，直接释放，避免泄漏
+                if (mttRewardVideoAd !== ad) {
+                    destroyAd(mttRewardVideoAd)
+                }
                 mttRewardVideoAd = ad
                 FlutterUnionadEventPlugin.sendContent(
                     mutableMapOf(
@@ -124,20 +148,20 @@ object RewardVideoAd {
         })
     }
 
-    private fun bindAdListener() {
-        mttRewardVideoAd?.setRewardAdInteractionListener(object :
+    private fun bindAdListener(ad: TTRewardVideoAd) {
+        ad.setRewardAdInteractionListener(object :
             RewardAdInteractionListener {
             override fun onAdShow() {
                 Log.e(TAG, "rewardVideoAd show")
                 FlutterUnionadEventPlugin.sendContent(
                     mutableMapOf("adType" to "rewardAd", "onAdMethod" to "onShow")
                 )
-                Log.d(TAG,"ecpm ${EcpmUtil.toMap(mttRewardVideoAd?.mediationManager?.showEcpm)}")
+                Log.d(TAG,"ecpm ${EcpmUtil.toMap(ad.mediationManager?.showEcpm)}")
                 FlutterUnionadEventPlugin.sendContent(
                     mutableMapOf(
                         "adType" to "rewardAd",
                         "onAdMethod" to "onEcpm",
-                        "info" to EcpmUtil.toMap(mttRewardVideoAd?.mediationManager?.showEcpm)
+                        "info" to EcpmUtil.toMap(ad.mediationManager?.showEcpm)
                     )
                 )
             }
@@ -154,6 +178,11 @@ object RewardVideoAd {
                 var map: MutableMap<String, Any?> =
                     mutableMapOf("adType" to "rewardAd", "onAdMethod" to "onClose")
                 FlutterUnionadEventPlugin.sendContent(map)
+                //迟到的奖励回调还要靠这个实例，下一次加载时再 destroy
+                if (mClosedAd !== ad) {
+                    destroyAd(mClosedAd)
+                }
+                mClosedAd = ad
             }
 
             override fun onVideoError() {
@@ -243,7 +272,8 @@ object RewardVideoAd {
      * 显示激励广告
      */
     fun showAd() {
-        if (mttRewardVideoAd == null) {
+        val ad = mttRewardVideoAd
+        if (ad == null) {
             var map: MutableMap<String, Any?> = mutableMapOf(
                 "adType" to "rewardAd",
                 "onAdMethod" to "onUnReady",
@@ -252,9 +282,11 @@ object RewardVideoAd {
             FlutterUnionadEventPlugin.sendContent(map)
             return
         }
-        bindAdListener()
-        mIsLoaded = true
-        mttRewardVideoAd?.showRewardVideoAd(
+        //取走即作废：再次 showAd() 必须先重新加载，否则回 onUnReady，
+        //不会把已展示过的实例再拿去展示一遍
+        mttRewardVideoAd = null
+        bindAdListener(ad)
+        ad.showRewardVideoAd(
             mActivity,
             TTAdConstant.RitScenes.CUSTOMIZE_SCENES,
             "scenes_test"
