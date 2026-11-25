@@ -99,13 +99,32 @@ export default class FlutterUnionadPlugin implements FlutterPlugin, MethodCallHa
       result.success(0)
     } else if (call.method == "loadRewardVideoAd") {
       let codeId: string = call.args.get("codeId");
+      let userID: string = call.args.get("userID") ?? "";
+      let mediaExtra: string = call.args.get("mediaExtra") ?? "";
+      let rewardName: string = call.args.get("rewardName") ?? "";
+      let rewardAmount: number = call.args.get("rewardAmount") ?? 0;
       if (this.adCreator == null) {
         this.adCreator = CSJAdSdk.getAdCreator()
       }
-      let adSlot = new AdSlotBuilder()
+      // 鸿蒙 SDK 的 AdSlotBuilder 没有 setUserID，服务端奖励回调只带 mediaExtra（回调参数 extra），
+      // 且只支持单层 JSON 对象，所以把用户 id 和业务透传值一起放进去，由服务端从 extra 里取。
+      let extra: Record<string, string> = {
+        "user_id": userID,
+        "media_extra": mediaExtra,
+      }
+      let slotBuilder = new AdSlotBuilder()
         .setCodeId(codeId)
-        .setAdLoadType(AdLoadType.LOAD)// .setMediaExtra(mediaExtra)
-        .build()
+        .setAdLoadType(AdLoadType.LOAD)
+        .setMediaExtra(JSON.stringify(extra))
+      if (rewardName.length > 0) {
+        slotBuilder.setRewardName(rewardName)
+      }
+      if (rewardAmount > 0) {
+        slotBuilder.setRewardAmount(rewardAmount)
+      }
+      let adSlot = slotBuilder.build()
+      // 重新加载前丢掉上一条，避免新广告还没回来时把旧实例再展示一次
+      this.rewardAd = null
       let mLoadListener: RewardAdLoadListener = {
         onAdLoaded: (rewardAd: CSJRewardAd) => {
           console.error("rewardVideoAd loaded 广告类型：${getAdType(ad.rewardVideoAdType)}")
@@ -180,9 +199,17 @@ export default class FlutterUnionadPlugin implements FlutterPlugin, MethodCallHa
         }
       }
       // 广告基础信息加载完成x
-      if (this.uiAbility != null) {
-        this.rewardAd?.setInteractionListener(adInteractionListener)
-        this.rewardAd?.showRewardAd(this.uiAbility.context.windowStage)
+      const readyAd = this.rewardAd
+      if (readyAd != null && this.uiAbility != null) {
+        // 一条广告只展示一次
+        this.rewardAd = null
+        readyAd.setInteractionListener(adInteractionListener)
+        readyAd.showRewardAd(this.uiAbility.context.windowStage)
+      } else {
+        let map: Record<string, Any> = {
+          "adType": "rewardAd", "onAdMethod": "onUnReady", "error": "广告预加载未完成"
+        };
+        FlutterUnionadEventPlugin.sendContent(map)
       }
       result.success(true)
     } else if (call.method == "loadFullScreenVideoAdInteraction") {
