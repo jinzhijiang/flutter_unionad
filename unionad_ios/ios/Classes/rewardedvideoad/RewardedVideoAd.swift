@@ -65,7 +65,9 @@ public class RewardedVideoAd : NSObject{
         }
         showAttemptCount += 1
         DispatchQueue.main.async {
-            self.bURewardedVideoAd?.show(fromRootViewController: MyUtils.getVC())
+            let vc = MyUtils.getVC()
+            LogUtil.logInstance.printLog(message: "展示激励广告 vc=\(vc)")
+            self.bURewardedVideoAd?.show(fromRootViewController: vc)
         }
     }
 
